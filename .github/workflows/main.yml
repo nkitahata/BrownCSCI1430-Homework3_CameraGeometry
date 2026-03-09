@@ -1,0 +1,43 @@
+name: pdfLaTeX compile the homework questions
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    if: github.event.repository.html_url == 'https://github.com/BrownCSCI1430/Homework3_CameraGeometry_Template'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Enable Expected Pages Export
+        run: sed -i 's/\\documentclass{csci1430}/\\documentclass[exportexpectedpages]{csci1430}/' questions/Homework3_Questions_Template.tex
+
+      - name: Generate Expected Pages Map (Compile 1)
+        uses: dante-ev/latex-action@2025-A
+        with:
+          root_file: Homework3_Questions_Template.tex
+          working_directory: questions
+          compiler: pdflatex
+          args: -interaction=nonstopmode
+
+      - name: Disable Expected Pages Export
+        run: sed -i 's/\\documentclass\[exportexpectedpages\]{csci1430}/\\documentclass{csci1430}/' questions/Homework3_Questions_Template.tex
+
+      - name: Final PDF Compilation
+        uses: dante-ev/latex-action@2025-A
+        with:
+          root_file: Homework3_Questions_Template.tex
+          working_directory: questions
+          compiler: latexmk
+          args: -pdf -latexoption=-file-line-error -latexoption=-interaction=nonstopmode
+
+      - name: Commit and Push PDF and Expected Pages
+        run: |
+          git config --local user.name 'github-actions-bot'
+          git config --local user.email 'cs1430-github-actions[bot]@users.noreply.github.com'
+          git add questions/Homework3_Questions_Template.pdf questions/csci1430_expectedpages.tex
+          git diff-index --quiet HEAD || git commit -m "Auto-update PDF and Expected Pages [skip ci]"
+          git push
