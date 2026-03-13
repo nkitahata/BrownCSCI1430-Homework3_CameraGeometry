@@ -402,10 +402,14 @@ def ransac_fundamental_matrix(matches1, matches2, num_iters):
     inlier_residuals.clear()
 
     n = matches1.shape[0]
-    threshold = 0.005
+    if n < 8:
+        F, residual = estimate_fundamental_matrix(matches1, matches2)
+        return F, matches1, matches2, residual
 
-    matches1_h = np.hstack([matches1, np.ones((n, 1))])
-    matches2_h = np.hstack([matches2, np.ones((n, 1))])
+    pts1_h = np.hstack([matches1, np.ones((n, 1))])
+    pts2_h = np.hstack([matches2, np.ones((n, 1))])
+
+    threshold = 1.0
 
     best_F = None
     best_mask = None
@@ -414,17 +418,27 @@ def ransac_fundamental_matrix(matches1, matches2, num_iters):
 
     for _ in range(num_iters):
         sample_idx = np.random.choice(n, 8, replace=False)
-        F_candidate, _ = estimate_fundamental_matrix(
-            matches1[sample_idx], matches2[sample_idx]
-        )
+        sample1 = matches1[sample_idx]
+        sample2 = matches2[sample_idx]
 
-        errors = np.abs(np.sum(matches2_h * (F_candidate @ matches1_h.T).T, axis=1))
-        mask = errors < threshold
-        count = np.sum(mask)
+        try:
+            F_candidate, _ = estimate_fundamental_matrix(sample1, sample2)
+        except np.linalg.LinAlgError:
+            inlier_counts.append(0)
+            inlier_residuals.append(np.inf)
+            continue
 
-        residual = np.sum(errors[mask] ** 2) if count > 0 else np.inf
+        Fx1 = (F_candidate @ pts1_h.T).T
+        Ftx2 = (F_candidate.T @ pts2_h.T).T
+        numer = np.sum(pts2_h * Fx1, axis=1) ** 2
+        denom = Fx1[:, 0] ** 2 + Fx1[:, 1] ** 2 + Ftx2[:, 0] ** 2 + Ftx2[:, 1] ** 2
+        sampson = numer / (denom + 1e-12)
 
-        inlier_counts.append(int(count))
+        mask = sampson < threshold
+        count = int(np.sum(mask))
+        residual = np.sum(sampson[mask]) if count > 0 else np.inf
+
+        inlier_counts.append(count)
         inlier_residuals.append(residual)
 
         if count > best_count or (count == best_count and residual < best_residual):
@@ -441,10 +455,14 @@ def ransac_fundamental_matrix(matches1, matches2, num_iters):
 
     best_F, _ = estimate_fundamental_matrix(best_inliers1, best_inliers2)
 
-    best_inliers1_h = np.hstack([best_inliers1, np.ones((best_inliers1.shape[0], 1))])
-    best_inliers2_h = np.hstack([best_inliers2, np.ones((best_inliers2.shape[0], 1))])
-    final_errors = np.abs(np.sum(best_inliers2_h * (best_F @ best_inliers1_h.T).T, axis=1))
-    best_inlier_residual = np.sum(final_errors ** 2)
+    in1_h = np.hstack([best_inliers1, np.ones((best_inliers1.shape[0], 1))])
+    in2_h = np.hstack([best_inliers2, np.ones((best_inliers2.shape[0], 1))])
+
+    Fx1 = (best_F @ in1_h.T).T
+    Ftx2 = (best_F.T @ in2_h.T).T
+    numer = np.sum(in2_h * Fx1, axis=1) ** 2
+    denom = Fx1[:, 0] ** 2 + Fx1[:, 1] ** 2 + Ftx2[:, 0] ** 2 + Ftx2[:, 1] ** 2
+    best_inlier_residual = np.sum(numer / (denom + 1e-12))
 
     return best_F, best_inliers1, best_inliers2, best_inlier_residual
 
