@@ -63,7 +63,9 @@ def camera_center(M):
     :param M: 3x4 projection matrix
     :return: length-3 numpy array, the camera center in world coordinates
     """
-    raise NotImplementedError("TODO: implement camera_center")
+    A = M[:, :3]
+    m4 = M[:, 3]
+    return -np.linalg.inv(A) @ m4
 
 
 def project(M, points3d):
@@ -77,7 +79,9 @@ def project(M, points3d):
     :param points3d: N x 3 array of 3D world coordinates
     :return: N x 2 array of 2D image coordinates (u, v)
     """
-    raise NotImplementedError("TODO: implement project")
+    points3d_h = np.hstack([points3d, np.ones((points3d.shape[0], 1))])
+    proj_h = (M @ points3d_h.T).T
+    return proj_h[:, :2] / proj_h[:, 2:3]
 
 
 def reprojection_error(M, points3d, points2d):
@@ -94,7 +98,9 @@ def reprojection_error(M, points3d, points2d):
     :param points2d: N x 2 array of observed 2D image coordinates
     :return: length-N array of L2 reprojection errors
     """
-    raise NotImplementedError("TODO: implement reprojection_error")
+    projected = project(M, points3d)
+    return np.linalg.norm(projected - points2d, axis=1)
+
 
 
 def estimate_camera_matrix(points2d, points3d):
@@ -122,7 +128,22 @@ def estimate_camera_matrix(points2d, points3d):
     :return: M, the 3x4 camera matrix
              residual, the sum of squared reprojection error (scalar)
     """
-    raise NotImplementedError("TODO: implement estimate_camera_matrix")
+    n = points2d.shape[0]
+    A = np.zeros((2 * n, 12), dtype=np.float64)
+
+    for i, ((u, v), (X, Y, Z)) in enumerate(zip(points2d, points3d)):
+        A[2 * i] = [X, Y, Z, 1, 0, 0, 0, 0, -u * X, -u * Y, -u * Z, -u]
+        A[2 * i + 1] = [0, 0, 0, 0, X, Y, Z, 1, -v * X, -v * Y, -v * Z, -v]
+
+    _, _, Vt = np.linalg.svd(A)
+    M = Vt[-1].reshape(3, 4)
+
+    if np.abs(M[-1, -1]) > 1e-12:
+        M = M / M[-1, -1]
+
+    errors = reprojection_error(M, points3d, points2d)
+    residual = np.sum(errors ** 2)
+    return M, residual
 
 
 # Task 2: Dense Stereo via Plane Sweeping
@@ -148,7 +169,13 @@ def back_project(M, points2d, lambdas):
     :param lambdas: length-N array of lambda (depth) parameters
     :return: N x 3 array of 3D world coordinates
     """
-    raise NotImplementedError("TODO: implement back_project")
+    A = M[:, :3]
+    C = camera_center(M)
+
+    points2d_h = np.hstack([points2d, np.ones((points2d.shape[0], 1))])
+    rays = np.linalg.solve(A, points2d_h.T).T
+    points3d = C[None, :] + lambdas[:, None] * rays
+    return points3d
 
 
 def compute_depth_homography(M_ref, M_other, lam):
@@ -165,7 +192,17 @@ def compute_depth_homography(M_ref, M_other, lam):
     :param lam:     scalar lambda (depth) parameter
     :return: H, 3x3 homography matrix
     """
-    raise NotImplementedError("TODO: implement compute_depth_homography")
+    A_ref = M_ref[:, :3]
+    A_other = M_other[:, :3]
+    t_other = M_other[:, 3]
+    C_ref = camera_center(M_ref)
+
+    B = A_other @ np.linalg.inv(A_ref)
+    a = A_other @ C_ref + t_other
+    e3 = np.array([0.0, 0.0, 1.0])
+
+    H = lam * B + np.outer(a, e3)
+    return H
 
 
 def compute_ncc(ref_gray, warped_gray, win_size):
@@ -188,7 +225,27 @@ def compute_ncc(ref_gray, warped_gray, win_size):
     :param win_size:    int, window size
     :return: H x W float32, NCC scores in [-1, 1]
     """
-    raise NotImplementedError("TODO: implement compute_ncc")
+    ref_gray = ref_gray.astype(np.float32)
+    warped_gray = warped_gray.astype(np.float32)
+    ksize = (win_size, win_size)
+    eps = 1e-8
+
+    mean_ref = cv2.boxFilter(ref_gray, -1, ksize)
+    mean_warp = cv2.boxFilter(warped_gray, -1, ksize)
+
+    mean_ref2 = cv2.boxFilter(ref_gray * ref_gray, -1, ksize)
+    mean_warp2 = cv2.boxFilter(warped_gray * warped_gray, -1, ksize)
+    mean_refwarp = cv2.boxFilter(ref_gray * warped_gray, -1, ksize)
+
+    var_ref = mean_ref2 - mean_ref * mean_ref
+    var_warp = mean_warp2 - mean_warp * mean_warp
+    cov = mean_refwarp - mean_ref * mean_warp
+
+    std_ref = np.sqrt(np.maximum(var_ref, 0.0) + eps)
+    std_warp = np.sqrt(np.maximum(var_warp, 0.0) + eps)
+
+    ncc = cov / (std_ref * std_warp + eps)
+    return np.clip(ncc, -1.0, 1.0).astype(np.float32)
 
 
 def plane_sweep_stereo(ref_gray, other_grays, M_ref, Ms_other, lambdas,
@@ -219,7 +276,33 @@ def plane_sweep_stereo(ref_gray, other_grays, M_ref, Ms_other, lambdas,
     :param ncc_threshold: minimum NCC to accept a lambda (depth) (default 0.4)
     :return: lambda_map, H x W float32 lambda (depth) map (NaN where unreliable)
     """
-    raise NotImplementedError("TODO: implement plane_sweep_stereo")
+    h, w = ref_gray.shape
+    best_ncc = np.full((h, w), -np.inf, dtype=np.float32)
+    lambda_map = np.full((h, w), np.nan, dtype=np.float32)
+
+    for lam in lambdas:
+        nccs = []
+
+        for other_gray, M_other in zip(other_grays, Ms_other):
+            H = compute_depth_homography(M_ref, M_other, lam)
+            warped = cv2.warpPerspective(
+                other_gray,
+                H,
+                (w, h),
+                flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+            ncc = compute_ncc(ref_gray, warped, win_size)
+            nccs.append(ncc)
+
+        avg_ncc = np.mean(nccs, axis=0)
+        improve = avg_ncc > best_ncc
+        best_ncc[improve] = avg_ncc[improve]
+        lambda_map[improve] = lam
+
+    lambda_map[best_ncc < ncc_threshold] = np.nan
+    return lambda_map
 
 
 # =============================================================================
@@ -250,7 +333,40 @@ def estimate_fundamental_matrix(points1, points2):
     :return: F_matrix, the 3x3 fundamental matrix
              residual, the sum of squared algebraic error
     """
-    raise NotImplementedError("TODO: implement estimate_fundamental_matrix")
+    u1 = points1[:, 0]
+    v1 = points1[:, 1]
+    u2 = points2[:, 0]
+    v2 = points2[:, 1]
+
+    A = np.column_stack([
+        u2 * u1,
+        u2 * v1,
+        u2,
+        v2 * u1,
+        v2 * v1,
+        v2,
+        u1,
+        v1,
+        np.ones_like(u1),
+    ])
+
+    _, _, Vt = np.linalg.svd(A)
+    F = Vt[-1].reshape(3, 3)
+
+    U, S, Vt = np.linalg.svd(F)
+    S[-1] = 0.0
+    F = U @ np.diag(S) @ Vt
+
+    norm = np.linalg.norm(F)
+    if norm > 0:
+        F = F / norm
+
+    points1_h = np.hstack([points1, np.ones((points1.shape[0], 1))])
+    points2_h = np.hstack([points2, np.ones((points2.shape[0], 1))])
+    errs = np.sum(points2_h * (F @ points1_h.T).T, axis=1)
+    residual = np.sum(errs ** 2)
+
+    return F, residual
 
 
 # Task 4: RANSAC 
@@ -282,8 +398,55 @@ def ransac_fundamental_matrix(matches1, matches2, num_iters):
     random.seed(0)
     np.random.seed(0)
 
-    raise NotImplementedError("TODO: implement ransac_fundamental_matrix")
+    inlier_counts.clear()
+    inlier_residuals.clear()
 
+    n = matches1.shape[0]
+    threshold = 0.005
+
+    matches1_h = np.hstack([matches1, np.ones((n, 1))])
+    matches2_h = np.hstack([matches2, np.ones((n, 1))])
+
+    best_F = None
+    best_mask = None
+    best_count = -1
+    best_residual = np.inf
+
+    for _ in range(num_iters):
+        sample_idx = np.random.choice(n, 8, replace=False)
+        F_candidate, _ = estimate_fundamental_matrix(
+            matches1[sample_idx], matches2[sample_idx]
+        )
+
+        errors = np.abs(np.sum(matches2_h * (F_candidate @ matches1_h.T).T, axis=1))
+        mask = errors < threshold
+        count = np.sum(mask)
+
+        residual = np.sum(errors[mask] ** 2) if count > 0 else np.inf
+
+        inlier_counts.append(int(count))
+        inlier_residuals.append(residual)
+
+        if count > best_count or (count == best_count and residual < best_residual):
+            best_F = F_candidate
+            best_mask = mask
+            best_count = count
+            best_residual = residual
+
+    if best_mask is None or np.sum(best_mask) < 8:
+        best_mask = np.ones(n, dtype=bool)
+
+    best_inliers1 = matches1[best_mask]
+    best_inliers2 = matches2[best_mask]
+
+    best_F, _ = estimate_fundamental_matrix(best_inliers1, best_inliers2)
+
+    best_inliers1_h = np.hstack([best_inliers1, np.ones((best_inliers1.shape[0], 1))])
+    best_inliers2_h = np.hstack([best_inliers2, np.ones((best_inliers2.shape[0], 1))])
+    final_errors = np.abs(np.sum(best_inliers2_h * (best_F @ best_inliers1_h.T).T, axis=1))
+    best_inlier_residual = np.sum(final_errors ** 2)
+
+    return best_F, best_inliers1, best_inliers2, best_inlier_residual
 
 # Task 5: Uncalibrated Stereo Disparity
 
@@ -310,7 +473,33 @@ def compute_disparity_map(rect_left_gray, rect_right_gray, win_size=11,
     :param max_disparity:   search range is (-max_disparity, +max_disparity)
     :return: H x W float32 disparity map (NaN where no valid match)
     """
-    raise NotImplementedError("TODO: implement compute_disparity_map")
+    h, w = rect_left_gray.shape
+    best_ncc = np.full((h, w), -np.inf, dtype=np.float32)
+    disparity_map = np.full((h, w), np.nan, dtype=np.float32)
+
+    for d in range(-max_disparity, max_disparity + 1):
+        shifted = np.zeros_like(rect_right_gray, dtype=np.float32)
+        valid = np.zeros((h, w), dtype=bool)
+
+        if d > 0:
+            shifted[:, d:] = rect_right_gray[:, :-d]
+            valid[:, d:] = True
+        elif d < 0:
+            shifted[:, :d] = rect_right_gray[:, -d:]
+            valid[:, :d] = True
+        else:
+            shifted[:] = rect_right_gray
+            valid[:] = True
+
+        ncc = compute_ncc(rect_left_gray, shifted, win_size)
+        ncc[~valid] = -np.inf
+
+        improve = ncc > best_ncc
+        best_ncc[improve] = ncc[improve]
+        disparity_map[improve] = d
+
+    disparity_map[best_ncc < 0.2] = np.nan
+    return disparity_map
 
 
 ###############################################################################
