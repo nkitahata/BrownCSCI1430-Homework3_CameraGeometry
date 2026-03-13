@@ -3,12 +3,17 @@
 Write your responses in the space below.
 Do NOT edit below the divider line.
 
+## Required homework items
 
+Included in my reslog file is the dense_cloud.ply, cards_disparity.png, cards_rectified.png, dense_cloud.png, dense_depth.png, reprojections.png, and RANSAC_Convergence.png
 
+## Extra credit?
 
+I attemped no extra credit.
 
+## Anything else?
 
-
+Giraffes---_how do they even?!_ 🦒
 
 ---
 # CSCI 1430 Results Log
